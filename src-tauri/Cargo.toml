@@ -1,6 +1,6 @@
 [package]
 name = "lumina-video-library"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lumina / 简影库 — 本地视频合集管理"
 authors = ["Lumina"]
 edition = "2021"

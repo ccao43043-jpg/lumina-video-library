@@ -38,3 +38,9 @@ export interface ToolCheck {
   version?: string | null;
   message: string;
 }
+
+export interface DownloadResult {
+  path: string;
+  imported: boolean;
+  import_message: string;
+}

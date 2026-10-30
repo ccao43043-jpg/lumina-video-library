@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { AppSettings, LibraryPath, ScanResult, ToolCheck, Video } from "./types";
+import type { AppSettings, DownloadResult, LibraryPath, ScanResult, ToolCheck, Video } from "./types";
 
 export const api = {
   listVideos: (query?: string, favoritesOnly?: boolean) =>
@@ -20,8 +20,21 @@ export const api = {
   saveSettings: (settings: AppSettings) => invoke<AppSettings>("save_settings", { settings }),
   appDataPath: () => invoke<string>("app_data_path"),
   checkYtdlp: () => invoke<ToolCheck>("check_ytdlp"),
-  downloadWithYtdlp: (url: string, audioOnly: boolean) =>
-    invoke<string>("download_with_ytdlp", { url, audioOnly }),
+  downloadWithYtdlp: (
+    url: string,
+    audioOnly: boolean,
+    platform?: string,
+    autoImport?: boolean,
+  ) =>
+    invoke<DownloadResult>("download_with_ytdlp", {
+      url,
+      audioOnly,
+      platform: platform ?? null,
+      autoImport: autoImport ?? true,
+    }),
+  detectVideoPlatform: (input: string) =>
+    invoke<string>("detect_video_platform", { input }),
+  importVideoFile: (path: string) => invoke<string>("import_video_file", { path }),
   checkWhisper: () => invoke<ToolCheck>("check_whisper"),
   transcribeWithWhisper: (mediaPath: string, language?: string) =>
     invoke<string>("transcribe_with_whisper", { mediaPath, language: language ?? null }),

@@ -53,13 +53,13 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
-          name: Lumina / 简影库 ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.1' }}
+          name: Lumina / 简影库 ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.1' }}
           body: |
             ## Lumina / 简影库 Windows 安装包
 
             - 产品：Lumina / 简影库
-            - 版本：0.1.0
+            - 版本：${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.1' }}
             - 安装包：NSIS `*-setup.exe`（未代码签名）
 
             ### 安装说明

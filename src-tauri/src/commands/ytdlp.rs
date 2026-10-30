@@ -1,3 +1,4 @@
+use crate::commands::scan;
 use crate::commands::settings;
 use regex::Regex;
 use serde::Serialize;
@@ -20,9 +21,81 @@ pub struct YtdlpCheck {
     pub message: String,
 }
 
+#[derive(Serialize)]
+pub struct DownloadResult {
+    pub path: String,
+    pub imported: bool,
+    pub import_message: String,
+}
+
 fn resolve_ytdlp() -> Result<String, String> {
     let s = settings::get_settings()?;
     Ok(s.ytdlp_path)
+}
+
+/// Normalize platform + raw input into a URL yt-dlp can fetch.
+fn resolve_url(url: &str, platform: Option<&str>) -> String {
+    let raw = url.trim();
+    let p = platform.unwrap_or("auto").to_ascii_lowercase();
+    let detected = detect_platform(raw);
+    let plat = if p == "auto" || p.is_empty() {
+        detected.as_str()
+    } else {
+        p.as_str()
+    };
+
+    match plat {
+        "bilibili" => {
+            if raw.to_ascii_lowercase().starts_with("http://")
+                || raw.to_ascii_lowercase().starts_with("https://")
+            {
+                raw.to_string()
+            } else if Regex::new(r"(?i)^bv[\w]+$").unwrap().is_match(raw) {
+                format!("https://www.bilibili.com/video/{raw}")
+            } else if let Some(caps) = Regex::new(r"(?i)^av(\d+)$").unwrap().captures(raw) {
+                format!("https://www.bilibili.com/video/av{}", &caps[1])
+            } else {
+                raw.to_string()
+            }
+        }
+        "youtube" => {
+            if raw.to_ascii_lowercase().starts_with("http://")
+                || raw.to_ascii_lowercase().starts_with("https://")
+            {
+                raw.to_string()
+            } else if Regex::new(r"^[\w-]{11}$").unwrap().is_match(raw) {
+                format!("https://www.youtube.com/watch?v={raw}")
+            } else {
+                raw.to_string()
+            }
+        }
+        _ => raw.to_string(),
+    }
+}
+
+fn detect_platform(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    if lower.contains("bilibili.com")
+        || lower.contains("b23.tv")
+        || Regex::new(r"(?i)^bv[\w]+$").unwrap().is_match(input.trim())
+        || Regex::new(r"(?i)^av\d+$").unwrap().is_match(input.trim())
+    {
+        return "bilibili".into();
+    }
+    if lower.contains("douyin.com")
+        || lower.contains("iesdouyin.com")
+        || lower.contains("v.douyin.com")
+    {
+        return "douyin".into();
+    }
+    if lower.contains("youtube.com")
+        || lower.contains("youtu.be")
+        || lower.contains("youtube-nocookie.com")
+        || Regex::new(r"^[\w-]{11}$").unwrap().is_match(input.trim())
+    {
+        return "youtube".into();
+    }
+    "custom".into()
 }
 
 #[tauri::command]
@@ -53,11 +126,18 @@ pub fn check_ytdlp() -> Result<YtdlpCheck, String> {
 }
 
 #[tauri::command]
+pub fn detect_video_platform(input: String) -> Result<String, String> {
+    Ok(detect_platform(&input))
+}
+
+#[tauri::command]
 pub async fn download_with_ytdlp(
     app: AppHandle,
     url: String,
     audio_only: bool,
-) -> Result<String, String> {
+    platform: Option<String>,
+    auto_import: Option<bool>,
+) -> Result<DownloadResult, String> {
     let check = check_ytdlp()?;
     if !check.available {
         return Err(check.message);
@@ -70,8 +150,10 @@ pub async fn download_with_ytdlp(
     };
     let _ = std::fs::create_dir_all(&out_dir);
 
+    let resolved = resolve_url(&url, platform.as_deref());
+
     let template = out_dir
-        .join("%(title)s.%(ext)s")
+        .join("%(title)s [%(id)s].%(ext)s")
         .to_string_lossy()
         .to_string();
 
@@ -80,11 +162,21 @@ pub async fn download_with_ytdlp(
         "--progress".to_string(),
         "-o".to_string(),
         template,
+        "--no-playlist".to_string(),
     ];
     if audio_only {
         args.extend(["-x".into(), "--audio-format".into(), "mp3".into()]);
     }
-    args.push(url);
+    args.push(resolved.clone());
+
+    let _ = app.emit(
+        "ytdlp-progress",
+        YtdlpProgress {
+            percent: 0.0,
+            status: "starting".into(),
+            message: format!("平台解析: {resolved}"),
+        },
+    );
 
     let mut child = Command::new(&check.path)
         .args(&args)
@@ -113,6 +205,16 @@ pub async fn download_with_ytdlp(
             }
         }
         if line.contains("[download] Destination:") {
+            if let Some(p) = line.split("Destination:").nth(1) {
+                last_file = p.trim().to_string();
+            }
+        }
+        if line.contains("[Merger] Merging formats into") {
+            if let Some(p) = line.split('"').nth(1) {
+                last_file = p.trim().to_string();
+            }
+        }
+        if line.contains("[ExtractAudio] Destination:") {
             if let Some(p) = line.split("Destination:").nth(1) {
                 last_file = p.trim().to_string();
             }
@@ -146,17 +248,68 @@ pub async fn download_with_ytdlp(
         });
     }
 
+    let file_path = if last_file.is_empty() {
+        out_dir.to_string_lossy().to_string()
+    } else {
+        last_file
+    };
+
+    let do_import = auto_import.unwrap_or(true);
+    let mut imported = false;
+    let mut import_message = String::new();
+
+    if do_import {
+        let out_dir_str = out_dir.to_string_lossy().to_string();
+        // Ensure download dir is a library path, then scan it (or import single file)
+        let path_obj = std::path::Path::new(&file_path);
+        if path_obj.is_file() {
+            match scan::import_video_file(file_path.clone()) {
+                Ok(msg) => {
+                    imported = true;
+                    import_message = msg;
+                }
+                Err(e) => {
+                    import_message = format!("单文件导入失败，尝试扫描目录: {e}");
+                    let _ = scan::ensure_library_path(out_dir_str.clone());
+                    match scan::scan_path(out_dir_str) {
+                        Ok(r) => {
+                            imported = true;
+                            import_message =
+                                format!("已扫描下载目录：新增 {}，更新 {}", r.added, r.updated);
+                        }
+                        Err(e2) => import_message = format!("导入失败: {e2}"),
+                    }
+                }
+            }
+        } else {
+            let _ = scan::ensure_library_path(out_dir_str.clone());
+            match scan::scan_path(out_dir_str) {
+                Ok(r) => {
+                    imported = true;
+                    import_message =
+                        format!("已扫描下载目录：新增 {}，更新 {}", r.added, r.updated);
+                }
+                Err(e) => import_message = format!("导入失败: {e}"),
+            }
+        }
+    }
+
     let _ = app.emit(
         "ytdlp-progress",
         YtdlpProgress {
             percent: 100.0,
             status: "done".into(),
-            message: last_file.clone(),
+            message: if import_message.is_empty() {
+                file_path.clone()
+            } else {
+                format!("{file_path}\n{import_message}")
+            },
         },
     );
-    Ok(if last_file.is_empty() {
-        out_dir.to_string_lossy().to_string()
-    } else {
-        last_file
+
+    Ok(DownloadResult {
+        path: file_path,
+        imported,
+        import_message,
     })
 }
