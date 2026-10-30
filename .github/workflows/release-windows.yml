@@ -1,0 +1,80 @@
+name: Release Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri (NSIS installer)
+        run: npx tauri build --bundles nsis
+
+      - name: Locate artifacts
+        id: artifacts
+        shell: pwsh
+        run: |
+          $nsis = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*-setup.exe" -ErrorAction SilentlyContinue
+          $app = Get-ChildItem -Path "src-tauri/target/release/Lumina.exe" -ErrorAction SilentlyContinue
+          if (-not $nsis) { throw "NSIS setup.exe not found" }
+          Write-Host "NSIS: $($nsis.FullName)"
+          "nsis=$($nsis.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($app) {
+            Write-Host "App: $($app.FullName)"
+            "app=$($app.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
+          name: Lumina / 简影库 ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.0' }}
+          body: |
+            ## Lumina / 简影库 Windows 安装包
+
+            - 产品：Lumina / 简影库
+            - 版本：0.1.0
+            - 安装包：NSIS `*-setup.exe`（未代码签名）
+
+            ### 安装说明
+            1. 下载 `*-setup.exe` 并运行
+            2. 安装包**未签名**，Windows SmartScreen / 杀毒软件可能提示「未知发布者」——选择「更多信息」→「仍要运行」即可
+            3. 需要 Windows 10/11 与 WebView2（安装程序通常会处理）
+
+            ### 资源
+            - `*-setup.exe`：推荐的安装程序
+            - `Lumina.exe`：可选的未打包可执行文件（仍需系统已有 WebView2）
+
+            仓库：https://github.com/ccao43043-jpg/lumina-video-library
+          files: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/Lumina.exe
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
